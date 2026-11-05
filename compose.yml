@@ -1,0 +1,30 @@
+# Shared default. Put anything specific to a host in compose.override.yml,
+# which Docker Compose merges automatically and git ignores.
+services:
+  caddy:
+    image: ghcr.io/baujahr/caddy-cloudflare-redis:latest
+    container_name: caddy
+    restart: always
+    ports:
+      - 80:80/tcp
+      - 443:443/tcp
+      - 443:443/udp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - caddy-config:/config
+      - caddy-data:/data
+    env_file:
+      - path: .env
+        required: false
+
+volumes:
+  caddy-config:
+    name: caddy-config
+  caddy-data:
+    name: caddy-data

@@ -1,0 +1,102 @@
+name: Build image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - default/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# Builds run in order, so an older build can't overwrite latest.
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build
+        run: docker build -t caddy-cloudflare-redis:ci .
+
+      - name: Check plugins
+        run: |
+          modules=$(docker run --rm caddy-cloudflare-redis:ci caddy list-modules --skip-standard)
+          echo "$modules"
+          grep -q '^caddy.storage.redis' <<<"$modules"
+          grep -q '^dns.providers.cloudflare' <<<"$modules"
+
+      - name: Check quic-go is not downgraded
+        run: |
+          info=$(docker run --rm caddy-cloudflare-redis:ci caddy build-info)
+          required=$(awk '$1 == "dep" && $2 == "github.com/quic-go/quic-go" { print $3 }' <<<"$info")
+          used=$(awk '$1 == "=>" && $2 == "github.com/quic-go/quic-go" { print $3 }' <<<"$info")
+          echo "Caddy requires $required, build uses ${used:-$required}"
+          if [ -n "$used" ] && [ "$(printf '%s\n' "$required" "$used" | sort -V | tail -1)" != "$used" ]; then
+            echo "::error::--replace downgrades quic-go. Remove it from the Dockerfile."
+            exit 1
+          fi
+
+      - name: Serve the default page on new volumes as each supported user
+        run: |
+          for ids in 65532:65532 99:100; do
+            docker run -d --name smoke --user "$ids" --read-only \
+              --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp \
+              -v smoke-config:/config -v smoke-data:/data \
+              caddy-cloudflare-redis:ci
+            ok=
+            for _ in $(seq 1 15); do
+              if docker exec smoke curl -fsS http://127.0.0.1/ | grep -q 'Caddy is running'; then ok=1; break; fi
+              sleep 1
+            done
+            logs=$(docker logs smoke 2>&1)
+            echo "$logs"
+            docker rm -f smoke
+            docker volume rm smoke-config smoke-data
+            [ -n "$ok" ]
+            if grep -q 'permission denied' <<<"$logs"; then
+              echo "::error::Caddy can't write to its volumes as $ids"
+              exit 1
+            fi
+          done
+
+      - name: Push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version=$(sed -n 's/^ARG CADDY_VERSION=v//p' Dockerfile)
+          docker tag caddy-cloudflare-redis:ci "$image:$version-r$GITHUB_RUN_NUMBER-$ARCH"
+          docker push "$image:$version-r$GITHUB_RUN_NUMBER-$ARCH"
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Publish multi-arch tags
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version=$(sed -n 's/^ARG CADDY_VERSION=v//p' Dockerfile)
+          build="$image:$version-r$GITHUB_RUN_NUMBER"
+          docker buildx imagetools create -t "$build" -t "$image:latest" "$build-amd64" "$build-arm64"

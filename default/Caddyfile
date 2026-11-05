@@ -1,0 +1,5 @@
+# Default config, used until you mount your own at /etc/caddy/Caddyfile.
+:80 {
+	root * /usr/share/caddy
+	file_server
+}
