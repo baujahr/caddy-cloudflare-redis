@@ -109,7 +109,7 @@ jobs:
           name: image-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/image-${{ matrix.arch }}.tar
           if-no-files-found: error
-          retention-days: 2
+          retention-days: 7
           compression-level: 0
 
   publish:

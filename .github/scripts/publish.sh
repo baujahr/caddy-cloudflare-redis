@@ -8,14 +8,26 @@ if [[ "${GITHUB_REF:-}" != refs/heads/main ]] ||
   exit 1
 fi
 
-: "${GITHUB_REPOSITORY:?}"
-: "${GITHUB_SHA:?}"
-: "${GITHUB_RUN_NUMBER:?}"
-: "${GITHUB_RUN_ATTEMPT:?}"
-: "${IMAGE_DIR:?}"
-version=$(sed -n 's/^ARG CADDY_VERSION=v//p' Dockerfile)
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-[[ "$GITHUB_RUN_NUMBER" =~ ^[0-9]+$ && "$GITHUB_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+for name in GITHUB_REPOSITORY GITHUB_SHA GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT IMAGE_DIR; do
+  if [[ -z "${!name:-}" ]]; then
+    echo "::error::Required environment variable $name is missing or empty."
+    exit 1
+  fi
+done
+if ! version=$(sed -n 's/^ARG CADDY_VERSION=v//p' Dockerfile); then
+  echo "::error::Cannot read CADDY_VERSION from Dockerfile."
+  exit 1
+fi
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "::error::Dockerfile must contain exactly one ARG CADDY_VERSION=vMAJOR.MINOR.PATCH."
+  exit 1
+fi
+for name in GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT; do
+  if [[ ! "${!name}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::$name must be a positive integer."
+    exit 1
+  fi
+done
 image="ghcr.io/${GITHUB_REPOSITORY,,}"
 build="$image:$version-r$GITHUB_RUN_NUMBER-a$GITHUB_RUN_ATTEMPT"
 

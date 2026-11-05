@@ -43,7 +43,7 @@ run_ok() {
 }
 run_fail() {
   : > "$CALLS"
-  if bash .github/scripts/publish.sh > "$temp/output" 2>&1; then
+  if (cd "${TEST_WORKDIR:-$root}" && bash "$root/.github/scripts/publish.sh") > "$temp/output" 2>&1; then
     echo "Expected publication to fail"
     exit 1
   fi
@@ -96,6 +96,38 @@ run_fail
 grep -q 'Re-run all jobs' "$temp/output"
 mv "$temp/arm64.tar" "$IMAGE_DIR/image-arm64.tar"
 echo "PASS partial attempt fails before any push"
+
+for name in GITHUB_REPOSITORY GITHUB_SHA GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT IMAGE_DIR; do
+  (export "$name="; run_fail)
+  [[ ! -s "$CALLS" ]]
+  grep -Fq "::error::Required environment variable $name is missing or empty." "$temp/output"
+done
+echo "PASS missing environment variables produce explicit errors before any push"
+
+for name in GITHUB_RUN_NUMBER GITHUB_RUN_ATTEMPT; do
+  for invalid in abc 0 -1 1.5 01; do
+    (export "$name=$invalid"; run_fail)
+    [[ ! -s "$CALLS" ]]
+    grep -Fq "::error::$name must be a positive integer." "$temp/output"
+  done
+done
+echo "PASS invalid run metadata produces explicit errors before any push"
+
+for fixture in 'ARG CADDY_VERSION=vnot-semver' '# missing version'; do
+  printf '%s\n' "$fixture" > "$temp/Dockerfile"
+  TEST_WORKDIR="$temp" run_fail
+  [[ ! -s "$CALLS" ]]
+  grep -Fq '::error::Dockerfile must contain exactly one ARG CADDY_VERSION=' "$temp/output"
+done
+printf 'ARG CADDY_VERSION=v1.2.3\nARG CADDY_VERSION=v4.5.6\n' > "$temp/Dockerfile"
+TEST_WORKDIR="$temp" run_fail
+[[ ! -s "$CALLS" ]]
+grep -Fq '::error::Dockerfile must contain exactly one ARG CADDY_VERSION=' "$temp/output"
+rm "$temp/Dockerfile"
+TEST_WORKDIR="$temp" run_fail
+[[ ! -s "$CALLS" ]]
+grep -Fq '::error::Cannot read CADDY_VERSION from Dockerfile.' "$temp/output"
+echo "PASS malformed, missing or duplicate versions and unreadable Dockerfile produce explicit errors"
 
 FAIL_REMOTE=1 run_fail
 no_latest
