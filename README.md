@@ -123,16 +123,50 @@ If you use bind mounts instead of named volumes, the host folders must be writab
 
 | Tag | Meaning |
 |---|---|
-| `latest` | Newest build. |
-| `2.11.9-r12` | One specific build, where `12` is the workflow run number. It doesn't move. |
+| `latest` | A validated build promoted while its source revision is the current `main` head. |
+| `2.11.9-r12-a2` | An attempt-specific build: workflow run `12`, attempt `2`. |
 
 Tags ending in `-amd64` or `-arm64` are the single-architecture parts of a build. Use the tags above instead.
 
-To stay on a build, set that tag as `image:` in your override.
+To select a build, set its attempt-specific tag as `image:` in your override.
+These tags distinguish reruns, but they are not registry-enforced immutable tags.
+For an exact artifact, pin the multi-architecture manifest digest instead:
+`ghcr.io/baujahr/caddy-cloudflare-redis@sha256:<manifest-digest>`.
+Older run-number-only tags should not be treated as immutable either.
+
+### Validation and publication
+
+Every pull request targeting `main` runs Compose validation, release-policy tests,
+and the AMD64/ARM64 builds and smoke tests. PR jobs have read-only repository
+permissions and never log in to GHCR or publish images.
+
+Relevant pushes to `main` and manual dispatches on `main` can publish. Tested
+images pass to a separate package-write job as artifacts named by run ID,
+attempt and architecture. Publication requires both architectures from the same
+attempt. For a publication retry, choose **Re-run all jobs**, not just failed
+jobs or the publish job; missing current-attempt artifacts cause publication to
+fail rather than reuse an older attempt.
+
+Publication is serialized, but serialization does not imply revision ordering.
+Historical runs can publish their attempt-specific tags; only a revision matching
+the freshly queried remote `main` head can promote `latest`. A branch advance,
+including a documentation-only commit, can therefore skip promotion. The head
+check is immediately before promotion, not an atomic transaction with GitHub:
+a new push can still occur between the check and registry update.
+
+This policy applies to runs using the updated workflow. Historical runs using
+the original workflow still contain its unconditional `latest` publication;
+do not rerun them. Adopting this workflow does not retroactively change those
+definitions or revoke their publishing authority.
 
 ## Updates
 
-The image is rebuilt only when `Dockerfile` or `default/` changes, or when the workflow is run by hand. Renovate proposes new versions of Caddy, the plugins and the base images. To update a host, run `docker compose pull && docker compose up -d`, or use a tool like Watchtower that follows `latest`.
+On `main`, builds run when `Dockerfile`, `default/`, `.dockerignore`, `.github/`,
+`compose*.yml` or `.env.example` changes, or when dispatched manually. PR
+validation has no path filter. Renovate proposes new versions of Caddy, the
+plugins and the base images. To update a host, run
+`docker compose pull && docker compose up -d`, or use a tool like Watchtower that
+follows `latest`.
 
 ## License
 
