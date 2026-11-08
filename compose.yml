@@ -1,5 +1,5 @@
-# Shared default. Put anything specific to a host in compose.override.yml,
-# which Docker Compose merges automatically and git ignores.
+# Standalone Caddy deployment. Put local customizations in compose.override.yml.
+# Fixed container/volume names below are intended for one deployment per host.
 services:
   caddy:
     image: ghcr.io/baujahr/caddy-cloudflare-redis:latest
