@@ -4,13 +4,14 @@ An unofficial container image of [Caddy](https://github.com/caddyserver/caddy),
 the web server with automatic HTTPS, with the
 [Cloudflare DNS](https://github.com/caddy-dns/cloudflare) and
 [Redis storage](https://github.com/pberkel/caddy-storage-redis) plugins included.
+The storage plugin also works with [Valkey](https://github.com/valkey-io/valkey).
 See the [Caddy documentation](https://caddyserver.com/docs/) for general
 configuration.
 
 Use this image as a standalone reverse proxy for several applications, or add
 it as a service in an application's existing Compose project. The plugins are
-installed, not enabled automatically: you do not need Cloudflare or Redis to
-run the image. Redis itself is not bundled.
+installed, not enabled automatically: you do not need Cloudflare, Valkey or
+Redis to run the image. No Valkey or Redis server is bundled.
 
 The image is published to GHCR for `linux/amd64` and `linux/arm64`. It runs as
 `65532:65532` and supports a read-only root filesystem with all capabilities
@@ -33,7 +34,7 @@ curl http://localhost/
 
 You should see the built-in "Caddy is running" page. This is only an HTTP
 smoke test: the [default Caddyfile](default/Caddyfile) does not configure a real
-site, HTTPS, Cloudflare or Redis, even though the Compose file publishes ports
+site, HTTPS, Cloudflare or storage plugin, even though the Compose file publishes ports
 80 and 443.
 
 The supplied [compose.yml](compose.yml) is a standalone deployment with fixed
@@ -42,29 +43,67 @@ host without changing those names and any conflicting published ports. For an
 existing application project, add a Caddy service to that project's Compose
 file instead; use project-scoped names unless sharing is intentional.
 
-## Your first reverse proxy
+## Proxy your existing containers
 
-In the quick-start directory, create a file named `Caddyfile`:
+Caddy reaches your other containers over a Docker network they share. Separate
+Compose projects do not share their default networks, so create one shared
+network once:
 
-```caddyfile
-:80 {
-	reverse_proxy app:80
-}
+```sh
+docker network create caddy
 ```
 
-Create `compose.override.yml` beside `compose.yml`:
+In the quick-start directory, create `compose.override.yml` to mount your own
+Caddyfile and attach Caddy to that network:
 
 ```yaml
 services:
   caddy:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-  app:
-    image: nginx:alpine
+    networks:
+      - caddy
+
+networks:
+  caddy:
+    external: true
 ```
 
-The `app` service is just a demonstration upstream. Validate the configuration
-and start it:
+Then, in each application's own `compose.yml`, attach only the service Caddy
+should reach to the same network. This excerpt shows the lines to add to an
+existing service:
+
+```yaml
+services:
+  my-app:
+    # ...your existing image, volumes and environment...
+    container_name: my-app
+    networks:
+      - default # keeps access to the application's own database and services
+      - caddy
+
+networks:
+  caddy:
+    external: true
+```
+
+Run `docker compose up -d` in that application's directory. A unique
+`container_name` gives Caddy a stable, unambiguous name; generic service names
+such as `app`, `web` or `server` can collide when several projects share one
+network.
+
+Back in the quick-start directory, create a file named `Caddyfile`:
+
+```caddyfile
+:80 {
+	reverse_proxy my-app:8080
+}
+```
+
+Replace `my-app` with your container name and `8080` with the port the
+application listens on inside its container. In a mapping such as
+`3000:8080`, that is the right-hand number. Validate the configuration and
+apply it:
 
 ```sh
 docker compose run --rm --no-deps caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -73,22 +112,28 @@ curl http://localhost/
 docker compose logs --tail=50 caddy
 ```
 
-You should now see the Nginx welcome page through Caddy. Both services share the
-project's default network, and `app:80` refers to the application's container
-port, not a published host port. Replace `app` with your real application and
-use the port it listens on. Inside Caddy's container, `localhost` means Caddy
-itself, not your host or a neighboring application.
+Once Caddy proxies the application, it no longer needs its own published host
+port; removing that `ports:` entry keeps it reachable only through Caddy. To
+serve several applications, give each one its own hostname and site block, as
+shown in the next section.
 
-For a shared proxy serving applications in other Compose projects, connect
-Caddy and the intended upstream services to a shared external Docker network.
-Separate projects do not share their default networks. See
-[Docker's cross-project networking example](https://docs.docker.com/compose/how-tos/networking/#connecting-multiple-compose-projects).
-Do not attach databases or other private services unless Caddy needs them.
+Other upstream locations:
 
-Compose loads `compose.override.yml` automatically in this workflow. Overrides
-merge rather than replace every setting: port mappings can accumulate. See
-[Compose merge rules](https://docs.docker.com/reference/compose-file/merge/) before
-changing ports or networks.
+- **Same Compose project as Caddy:** use the service name directly; the
+  project's default network already connects them.
+- **Directly on the Docker host, not in a container:** use
+  `reverse_proxy host.docker.internal:8080` and, on Linux, add
+  `extra_hosts: ["host.docker.internal:host-gateway"]` to the Caddy service.
+  The application must listen on an address reachable from Docker, not only
+  `127.0.0.1`.
+- **`localhost`:** inside Caddy's container this means Caddy itself, not your
+  host or a neighbouring container.
+
+Do not attach databases or other private services to the `caddy` network.
+Compose merges `compose.override.yml` with `compose.yml` rather than replacing
+every setting: port mappings, for example, accumulate. See
+[Compose merge rules](https://docs.docker.com/reference/compose-file/merge/)
+before changing ports or networks.
 
 ## Enable Cloudflare DNS challenges
 
@@ -104,21 +149,27 @@ CLOUDFLARE_API_TOKEN=replace-with-your-zone-scoped-api-token
 ```
 
 The supplied Compose file passes this file to Caddy. Replace the HTTP-only
-`Caddyfile` with:
+`Caddyfile` with one site block per application:
 
 ```caddyfile
+{
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+}
+
 app.example.com {
-	tls {
-		dns cloudflare {env.CLOUDFLARE_API_TOKEN}
-	}
-	reverse_proxy app:80
+	reverse_proxy my-app:8080
+}
+
+wiki.example.com {
+	reverse_proxy wiki:3000
 }
 ```
 
-Replace `app.example.com` with your own hostname. Configure DNS so clients can
-resolve that hostname to an address from which they can reach Caddy. DNS-01
-certificate validation does not require publicly exposing port 80, but it also
-does not create a route to a private or Tailscale-only server.
+The global `acme_dns` option uses Cloudflare DNS challenges for every site.
+Replace the hostnames and upstreams with your own. Configure DNS so clients
+resolve each hostname to an address from which they can reach Caddy. DNS-01
+validation does not require publicly exposing port 80, but it also does not
+create a route to a private or Tailscale-only server.
 
 Validate, then recreate Caddy to load the new environment:
 
@@ -130,41 +181,54 @@ docker compose logs --tail=50 caddy
 
 Visit `https://app.example.com` once issuance succeeds. The token enables DNS
 challenges; it does not configure Cloudflare proxying, Tunnels or Tailscale.
-Redis is still optional: without a Redis storage block, Caddy uses its normal
-local storage in the persistent data volume.
+Certificate storage stays local, in Caddy's persistent data volume, unless you
+also enable the storage plugin below.
 
-## Enable Redis storage, with Cloudflare
+## Enable Valkey or Redis storage
 
-The complete [Cloudflare + Redis example](examples/cloudflare-redis/) includes
-a Caddyfile, Compose file and environment template. It runs Caddy, an Nginx
-demonstration upstream and a password-protected Redis instance with persistent
-storage. Redis has no published host port and uses a separate internal network.
+The storage plugin keeps certificates, private keys and coordination locks in
+a Valkey or Redis server instead of Caddy's local data volume. This is useful
+when several Caddy instances should share certificates. A single Caddy
+instance does not need it. The plugin uses the Redis protocol and works with
+[Valkey](https://github.com/valkey-io/valkey), the open-source fork of Redis,
+or with Redis itself.
 
-To configure an existing Redis service instead, add this global options block
-at the very beginning of your Caddyfile, before the site blocks:
+The complete [Cloudflare + Valkey example](examples/cloudflare-valkey/)
+includes a Caddyfile, Compose file and environment template. It runs Caddy and
+a password-protected Valkey server with persistent storage. Valkey has no
+published host port and sits on a separate internal network; your applications
+join the shared `caddy` network as described above.
+
+To use an existing Valkey or Redis server instead, add the `storage` option to
+the global options block at the very beginning of your Caddyfile:
 
 ```caddyfile
 {
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 	storage redis {
-		address redis:6379
-		password "{$REDIS_PASSWORD}"
+		address valkey:6379
+		password "{$VALKEY_PASSWORD}"
 		key_prefix caddy
 	}
 }
+
+app.example.com {
+	reverse_proxy my-app:8080
+}
 ```
 
-Set `REDIS_PASSWORD` in the environment passed to Caddy and make sure
-`redis:6379` is reachable from Caddy's network. Keep your existing Cloudflare
-`tls` block in the site below it. If using a remote Redis server, configure its
+`storage redis` is the plugin's name; it applies to Valkey too. Set
+`VALKEY_PASSWORD` in the environment passed to Caddy and make sure the address
+is reachable from Caddy's network. For a remote server, configure its
 authentication and TLS as appropriate; the
-[Redis plugin documentation](https://github.com/pberkel/caddy-storage-redis/tree/v1.9.0#configuration)
+[storage plugin documentation](https://github.com/pberkel/caddy-storage-redis/tree/v1.9.0#configuration)
 describes the available options.
 
-Redis stores certificate/private-key material and coordination data, not HTTP
-response caches or your application database. Protect and back up that data.
-The plugin checks Redis connectivity during startup, reload and validation, so
-start Redis before running `caddy validate`. Switching storage does not
-automatically migrate an existing local certificate store.
+This storage holds certificate and private-key material, not HTTP response
+caches or your application data. Protect and back it up. The plugin checks the
+connection during startup, reload and validation, so start the server before
+running `caddy validate`. Switching storage does not automatically migrate an
+existing local certificate store.
 
 ## Everyday commands
 
@@ -222,7 +286,7 @@ a promise about older image tags:
 |---|---|---|
 | [Caddy](https://github.com/caddyserver/caddy) | `v2.11.9` | Web server and reverse proxy |
 | [caddy-dns/cloudflare](https://github.com/caddy-dns/cloudflare) | `v0.2.4` | Cloudflare DNS challenges for HTTPS certificates |
-| [pberkel/caddy-storage-redis](https://github.com/pberkel/caddy-storage-redis) | `v1.9.0` | Redis-backed certificate storage and coordination |
+| [pberkel/caddy-storage-redis](https://github.com/pberkel/caddy-storage-redis) | `v1.9.0` | Certificate storage in Valkey or Redis |
 | [quic-go](https://github.com/quic-go/quic-go) | `v0.64.1` | QUIC transport used by HTTP/3; explicitly overridden |
 | [xcaddy](https://github.com/caddyserver/xcaddy) | `v0.4.7` | Build tool, not a runtime service |
 
@@ -272,8 +336,8 @@ sudo sysctl net.ipv4.ip_unprivileged_port_start=80
 
 To persist that policy, add `net.ipv4.ip_unprivileged_port_start=80` to a file
 under `/etc/sysctl.d/`. This changes host policy, not just this container.
-Host networking also removes Compose service-name discovery; adjust upstream
-and Redis addresses instead of continuing to use `app` or `redis`.
+Host networking also removes Docker network name resolution; point upstream and
+storage addresses at host addresses instead of container names.
 
 ### Health check
 

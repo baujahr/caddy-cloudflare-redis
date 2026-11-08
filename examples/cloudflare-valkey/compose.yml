@@ -1,3 +1,5 @@
+# Caddy with Cloudflare DNS challenges and certificate storage in Valkey.
+# Your applications join the shared external "caddy" network; see README.md.
 services:
   caddy:
     image: ghcr.io/baujahr/caddy-cloudflare-redis:latest
@@ -14,53 +16,51 @@ services:
     tmpfs:
       - /tmp
     environment:
-      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?Set CLOUDFLARE_API_TOKEN in .env}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?Set VALKEY_PASSWORD in .env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-config:/config
       - caddy-data:/data
     networks:
-      - default
+      - caddy
       - storage
     depends_on:
-      redis:
+      valkey:
         condition: service_healthy
-      app:
-        condition: service_started
 
-  app:
-    image: nginx:alpine
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
+  valkey:
+    image: valkey/valkey:9-alpine
     restart: unless-stopped
     command:
-      - redis-server
+      - valkey-server
       - --appendonly
       - "yes"
       - --requirepass
-      - ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      - ${VALKEY_PASSWORD:?Set VALKEY_PASSWORD in .env}
     environment:
-      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      VALKEYCLI_AUTH: ${VALKEY_PASSWORD:?Set VALKEY_PASSWORD in .env}
     volumes:
-      - redis-data:/data
+      - valkey-data:/data
     networks:
       - storage
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10
       start_period: 5s
 
 networks:
+  # Shared with your application containers. Create it once with:
+  #   docker network create caddy
+  caddy:
+    external: true
+  # Private network between Caddy and Valkey only, with no outside access.
   storage:
     internal: true
 
 volumes:
   caddy-config:
   caddy-data:
-  redis-data:
+  valkey-data:
