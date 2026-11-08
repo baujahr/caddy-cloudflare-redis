@@ -1,0 +1,22 @@
+{
+	# Use Cloudflare DNS challenges for every site below.
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+
+	# Store certificates in Valkey. "redis" is the plugin's name; Valkey speaks
+	# the same protocol.
+	storage redis {
+		address valkey:6379
+		password "{$VALKEY_PASSWORD}"
+		key_prefix caddy
+	}
+}
+
+# One site block per application. Use the application's container name and
+# the port it listens on inside its container.
+app.example.com {
+	reverse_proxy my-app:8080
+}
+
+wiki.example.com {
+	reverse_proxy wiki:3000
+}
